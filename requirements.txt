@@ -1,3 +1,4 @@
 awscli==1.18.135
 boto3==1.14.58
 click==7.1.2
+paramiko==2.7.2
