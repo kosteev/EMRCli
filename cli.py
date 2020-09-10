@@ -56,7 +56,7 @@ def _wait_until_cluster_ready(emr_client, cluster_id):
         time.sleep(10)
 
 
-def _bootstrap_cluster(host, key_filename):
+def _bootstrap_cluster(host, key_filename, r_packages_s3_path):
     def _call_command(ssh_client, command):
         click.echo("Executing command: {0}".format(command))
         _, stdout, _ = ssh_client.exec_command(command)
@@ -84,9 +84,10 @@ def _bootstrap_cluster(host, key_filename):
     _call_command(ssh_client, "hadoop fs -mkdir /user/rstudio-user")
     _call_command(ssh_client, "hadoop fs -chmod 777 /user/rstudio-user")
 
-    # Download R packages.
-    _call_command(ssh_client, "sudo aws s3 cp s3://com.credolab.packages/20200910_packages.tar /home/rstudio-user/credo-packages.tar")
-    _call_command(ssh_client, "sudo tar -xvf /home/rstudio-user/credo-packages.tar -C /home/rstudio-user/")
+    # Download/install R packages.
+    if r_packages_s3_path:
+        _call_command(ssh_client, "sudo aws s3 cp {0} /home/rstudio-user/packages.tar".format(r_packages_s3_path))
+        _call_command(ssh_client, "sudo tar -xvf /home/rstudio-user/packages.tar -C /home/rstudio-user/")
 
     ssh_client.close()
 
@@ -101,10 +102,11 @@ def _bootstrap_cluster(host, key_filename):
 @click.option("--worker-count", default=1, help="Worker instance count")
 @click.option("--worker-market", default="ON_DEMAND", help="Worker instance market")
 @click.option("--key-filename", required=True, help="EC2 key filename")
+@click.option("--r-packages-s3-path", help="R packages to install")
 def create_cluster(
     name, release, ec2_key_pair, region_name,
     driver_type, worker_type, worker_count, worker_market,
-    key_filename,
+    key_filename, r_packages_s3_path,
 ):
     if not name:
         cluster_hash = "".join(random.choice(string.digits) for _ in range(5))
@@ -143,7 +145,7 @@ def create_cluster(
 
     click.echo("")
     click.echo("Bootstrapping cluster")
-    _bootstrap_cluster(host, key_filename)
+    _bootstrap_cluster(host, key_filename, r_packages_s3_path)
 
     click.echo("")
     # ec2-3-0-101-87.ap-southeast-1.compute.amazonaws.com -> 3.0.101.87
