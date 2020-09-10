@@ -30,7 +30,6 @@ def _wait_until_cluster_ready(emr_client, cluster_id):
                 "Release: {release}",
                 "Applications: {applications}",
                 "ARN: {arn}",
-                "",
             ]).format(
                 name=d["Cluster"]["Name"],
                 release=d["Cluster"]["ReleaseLabel"],
@@ -59,17 +58,33 @@ def _wait_until_cluster_ready(emr_client, cluster_id):
 
 def _bootstrap_cluster(host, key_filename):
     def _call_command(ssh_client, command):
+        click.echo("Executing command: {0}".format(command))
         _, stdout, stderr = ssh_client.exec_command(command)
-        click.echo("\n".join(
-            ["StdOut:"] +
-            list(stdout) +
-            ["StdErr:"]
-        ))
+        # for line in stdout:
+        #     click.echo(line)
+        # for line in stderr:
+        #     click.echo(line)
 
     ssh_client = paramiko.SSHClient()
     ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     ssh_client.connect(host, username="hadoop", key_filename=key_filename)
+
+    # Install RStudio.
     _call_command(ssh_client, "sudo yum update")
+    _call_command(ssh_client, "sudo yum install libcurl-devel openssl-devel R-devel")
+    _call_command(ssh_client, "wget https://download2.rstudio.org/server/centos6/x86_64/rstudio-server-rhel-1.3.1073-x86_64.rpm")
+    _call_command(ssh_client, "sudo yum install rstudio-server-rhel-1.3.1073-x86_64.rpm")
+
+    # Add user.
+    _call_command(ssh_client, "sudo useradd -m rstudio-user")
+    _call_command(ssh_client, "echo 'thepassword123' | sudo passwd --stdin rstudio-user")
+
+    # Create home folder in hdfs.
+    _call_command(ssh_client, "hadoop fs -mkdir /user/rstudio-user")
+    _call_command(ssh_client, "hadoop fs -chmod 777 /user/rstudio-user")
+
+    # Download R packages.
+    _call_command(ssh_client, "aws s3 cp s3://com.credolab.packages/packages-20200326.tar /home/rstudio-user/R/credo-packages.tar")
 
 
 @cli.command()
@@ -81,7 +96,7 @@ def _bootstrap_cluster(host, key_filename):
 @click.option("--worker-type", default="m5.xlarge", help="Worker instance type")
 @click.option("--worker-count", default=1, help="Worker instance count")
 @click.option("--worker-market", default="ON_DEMAND", help="Worker instance market")
-@click.option("--key-filename", help="EC2 key filename")
+@click.option("--key-filename", required=True, help="EC2 key filename")
 def create_cluster(
     name, release, ec2_key_pair, region_name,
     driver_type, worker_type, worker_count, worker_market,
@@ -118,11 +133,16 @@ def create_cluster(
     )["JobFlowId"]
     click.echo("EMR cluster with id={0} submitted to start".format(cluster_id))
 
+    click.echo("")
     click.echo("Waiting until cluster is ready")
     host = _wait_until_cluster_ready(emr_client, cluster_id)
 
-    click.echo("Bootstraping cluster")
+    click.echo("")
+    click.echo("Bootstrapping cluster")
     _bootstrap_cluster(host, key_filename)
+
+    click.echo("")
+    click.echo("Cluster is ready to use")
 
 
 if __name__ == "__main__":
