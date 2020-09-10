@@ -111,8 +111,7 @@ def create_cluster(
     """Create EMR cluster.
 
     Once cluster is up, visit link from the output and use credentials to access RStudio:
-        user=rstudio-user
-        password=thepassword123
+    user="rstudio-user", password="thepassword123".
     """
     if not name:
         cluster_hash = "".join(random.choice(string.digits) for _ in range(5))
