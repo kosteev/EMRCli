@@ -61,10 +61,17 @@ def _bootstrap_cluster(host, key_filename, r_packages_s3_path):
         click.echo("Executing command: {0}".format(command))
         _, stdout, _ = ssh_client.exec_command(command)
         stdout.channel.recv_exit_status()
-        for line in stdout.readlines():
-            click.echo(line)
-        # for line in stderr:
-        #     click.echo(line)
+        lines = stdout.readlines()
+        if len(lines) > 4:
+            # Print first and last 2 lines.
+            click.echo(lines[0].strip())
+            click.echo(lines[1].strip())
+            click.echo("." * 20)
+            click.echo(lines[-2].strip())
+            click.echo(lines[-1].strip())
+        else:
+            for l in lines:
+                click.echo(l.strip())
 
     ssh_client = paramiko.SSHClient()
     ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -139,6 +146,17 @@ def create_cluster(
             "Ec2KeyName": ec2_key_pair,
             "KeepJobFlowAliveWhenNoSteps": True,
         },
+        Configurations=[{
+            "Classification": "spark",
+            "Properties": {
+                "maximizeResourceAllocation": "true",
+            },
+        }, {
+            "Classification": "spark-defaults",
+            "Properties": {
+                "spark.dynamicAllocation.enabled": "false",
+            },
+        }],
         ServiceRole="EMR_DefaultRole",
         JobFlowRole="EMR_EC2_DefaultRole",
     )["JobFlowId"]
@@ -155,7 +173,9 @@ def create_cluster(
     click.echo("")
     # ec2-3-0-101-87.ap-southeast-1.compute.amazonaws.com -> 3.0.101.87
     ip = host[4:].split(".")[0].replace("-", ".")
-    click.echo("Cluster is ready to use. RStudio link: http://{0}:8787".format(ip))
+    click.echo("Cluster is ready to use.")
+    click.echo("RStudio link: http://{0}:8787".format(ip))
+    click.echo("Spark History Server: http://{0}:18080/?showIncomplete=true".format(ip))
 
 
 if __name__ == "__main__":
