@@ -11,6 +11,11 @@ import boto3
 import click
 import paramiko
 
+# Password to access Jupyter/RStudio.
+APP_PASSWORD = "thepassword123"
+# from notebook.auth import passwd; passwd(APP_PASSWORD)
+JUPYTER_SERVER_PASSWORD = "argon2:$argon2id$v=19$m=10240,t=10,p=8$hp6s0Tp9DBwcz0j85WNsPw$NDDit3Ag+FnT/0EHei9N+g"
+
 
 @click.group()
 def cli():
@@ -56,10 +61,14 @@ def _wait_until_cluster_ready(emr_client, cluster_id):
         time.sleep(10)
 
 
-def _bootstrap_cluster(host, key_filename, r_packages_s3_path):
-    def _call_command(ssh_client, command):
+def _bootstrap_cluster(host, key_filename, r_packages_s3_path, jupyter, rstudio):
+    def _call_command(ssh_client, command, wait=True):
+        click.echo("")
         click.echo("Executing command: {0}".format(command))
         _, stdout, _ = ssh_client.exec_command(command)
+        if not wait:
+            return
+
         stdout.channel.recv_exit_status()
         lines = stdout.readlines()
         if len(lines) > 4:
@@ -77,31 +86,43 @@ def _bootstrap_cluster(host, key_filename, r_packages_s3_path):
     ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     ssh_client.connect(host, username="hadoop", key_filename=key_filename)
 
-    # Install RStudio.
-    _call_command(ssh_client, "sudo yum -y update")
-    _call_command(ssh_client, "sudo yum -y install libcurl-devel openssl-devel R-devel")
-    _call_command(ssh_client, "wget https://download2.rstudio.org/server/centos6/x86_64/rstudio-server-rhel-1.3.1073-x86_64.rpm")
-    _call_command(ssh_client, "sudo yum -y install rstudio-server-rhel-1.3.1073-x86_64.rpm")
+    # --- Jupyter section ---.
+    if jupyter:
+        # 1. Install Jupyter.
+        _call_command(ssh_client, "sudo pip3 install jupyter==1.0.0")
+        # 2. Install findspark.
+        _call_command(ssh_client, "sudo pip3 install findspark==1.4.2")
+        # 3. Run Jupyter server.
+        _call_command(
+            ssh_client,
+            "jupyter notebook --ip 0.0.0.0 --NotebookApp.password='{0}'".format(JUPYTER_SERVER_PASSWORD),
+            wait=False,
+        )
 
-    # Add user.
-    _call_command(ssh_client, "sudo useradd -m rstudio-user")
-    _call_command(ssh_client, "echo 'thepassword123' | sudo passwd --stdin rstudio-user")
-
-    # Create home folder in hdfs.
-    _call_command(ssh_client, "hadoop fs -mkdir /user/rstudio-user")
-    _call_command(ssh_client, "hadoop fs -chmod 777 /user/rstudio-user")
-
-    # Download/install R packages.
-    if r_packages_s3_path:
-        _call_command(ssh_client, "sudo aws s3 cp {0} /home/rstudio-user/packages.tar".format(r_packages_s3_path))
-        _call_command(ssh_client, "sudo tar -xvf /home/rstudio-user/packages.tar -C /home/rstudio-user/")
+    # --- RStudio section ---.
+    if rstudio:
+        # 1. Install RStudio.
+        _call_command(ssh_client, "sudo yum -y update")
+        _call_command(ssh_client, "sudo yum -y install libcurl-devel openssl-devel R-devel")
+        _call_command(ssh_client, "wget https://download2.rstudio.org/server/centos6/x86_64/rstudio-server-rhel-1.3.1073-x86_64.rpm")
+        _call_command(ssh_client, "sudo yum -y install rstudio-server-rhel-1.3.1073-x86_64.rpm")
+        # 2. Add user.
+        _call_command(ssh_client, "sudo useradd -m rstudio-user")
+        _call_command(ssh_client, "echo '{0}' | sudo passwd --stdin rstudio-user".format(APP_PASSWORD))
+        # 3. Create home folder in hdfs.
+        _call_command(ssh_client, "hadoop fs -mkdir /user/rstudio-user")
+        _call_command(ssh_client, "hadoop fs -chmod 777 /user/rstudio-user")
+        # 4. Download/install R packages.
+        if r_packages_s3_path:
+            _call_command(ssh_client, "sudo aws s3 cp {0} /home/rstudio-user/packages.tar".format(r_packages_s3_path))
+            _call_command(ssh_client, "sudo tar -xvf /home/rstudio-user/packages.tar -C /home/rstudio-user/")
 
     ssh_client.close()
 
 
 @cli.command()
 @click.option("--name", help="Cluster name")
-@click.option("--release", default="emr-6.1.0", help="EMR release label")
+@click.option("--release", default="emr-5.31.0", help="EMR release label")
 @click.option("--ec2-key-pair", default="emr", help="EC2 key pair")
 @click.option("--region-name", default="ap-southeast-1", help="EMR region name")
 @click.option("--driver-type", default="m5.xlarge", help="Driver instance type")
@@ -109,17 +130,22 @@ def _bootstrap_cluster(host, key_filename, r_packages_s3_path):
 @click.option("--worker-count", default=1, help="Worker instance count")
 @click.option("--worker-market", default="ON_DEMAND", help="Worker instance market")
 @click.option("--key-filename", required=True, help="EC2 key filename")
+@click.option("--jupyter/--no-jupyter", default=False, help="Install Jupyter")
+@click.option("--rstudio/--no-rstudio", default=False, help="Install RStudio")
 @click.option("--r-packages-s3-path", help="R packages to install")
 def create_cluster(
     name, release, ec2_key_pair, region_name,
     driver_type, worker_type, worker_count, worker_market,
-    key_filename, r_packages_s3_path,
+    key_filename, jupyter, rstudio, r_packages_s3_path,
 ):
     """Create EMR cluster.
 
-    Once cluster is up, visit link from the output and use credentials to access RStudio:
-    user="rstudio-user", password="thepassword123".
+    Once cluster is up, visit links from the output.
     """
+    if (not jupyter and
+            not rstudio):
+        raise ValueError("Either `--jupyter` or `--rstudio` should be specified")
+
     if not name:
         cluster_hash = "".join(random.choice(string.digits) for _ in range(5))
         name = "MY-CLUSTER-{0}".format(cluster_hash)
@@ -168,14 +194,21 @@ def create_cluster(
 
     click.echo("")
     click.echo("Bootstrapping cluster")
-    _bootstrap_cluster(host, key_filename, r_packages_s3_path)
+    _bootstrap_cluster(
+        host, key_filename, r_packages_s3_path,
+        jupyter=jupyter, rstudio=rstudio,
+    )
 
     click.echo("")
     # ec2-3-0-101-87.ap-southeast-1.compute.amazonaws.com -> 3.0.101.87
     ip = host[4:].split(".")[0].replace("-", ".")
+    click.echo("-" * 60)
     click.echo("Cluster is ready to use.")
-    click.echo("RStudio link: http://{0}:8787".format(ip))
-    click.echo("Spark History Server: http://{0}:18080/?showIncomplete=true".format(ip))
+    if jupyter:
+        click.echo("Jupyter link: http://{0}:8888. Password: '{1}'.".format(ip, APP_PASSWORD))
+    if rstudio:
+        click.echo("RStudio link: http://{0}:8787. User: 'rstudio-user', password: '{1}'.".format(ip, APP_PASSWORD))
+    click.echo("Spark History Server: http://{0}:18080/?showIncomplete=true.".format(ip))
 
 
 if __name__ == "__main__":
